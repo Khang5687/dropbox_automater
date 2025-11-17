@@ -305,7 +305,7 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
                         success, message = future.result()
                         
                         # Get the row data from the original dataframe
-                        row_data = df.iloc[idx].to_dict()
+                        row_data = df.loc[idx].to_dict()
                         
                         if success:
                             if "Skipped" in message:
@@ -320,7 +320,7 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
                             overall_pbar.write(f"✗ {upc}: {message}")
                             
                     except Exception as e:
-                        row_data = df.iloc[idx].to_dict()
+                        row_data = df.loc[idx].to_dict()
                         stats.add_failed(upc, url, str(e), row_data=row_data)
                         overall_pbar.write(f"✗ {upc}: Exception: {str(e)}")
                     
