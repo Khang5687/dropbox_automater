@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 import os
 import argparse
-from cookie_loader import load_json_cookies, load_local_storage, load_session_storage
 
 url = "https://www.dropbox.com/scl/fo/p3za42p2itpgrsbux8gr5/AM3_CJTIrUZLERQiBKWHUIk?rlkey=gchwni1c2z79e2cx3d44tsazv&st=b9y4jc6e&dl=0"
 
@@ -29,6 +28,9 @@ def main():
         "--user-agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'"
     )
     
+    # Enable remote debugging on port 9222 for DevTools MCP access
+    chrome_options.add_argument("--remote-debugging-port=9222")
+    
     # Optional: start with a specific user data directory to persist session
     chrome_options.add_argument("--user-data-dir=/tmp/chrome-debug")
     
@@ -46,27 +48,7 @@ def main():
     driver = webdriver.Chrome(options=chrome_options)
 
     try:
-        # First, visit the domain to establish a session
-        print("Visiting Dropbox domain...")
-        driver.get("https://www.dropbox.com")
-        time.sleep(2)
-
-        # Load all storage types in the correct order
-        print("Loading cookies...")
-        load_json_cookies(driver, "cookies.txt")
-        
-        print("Loading local storage...")
-        load_local_storage(driver, "localstorage.json")
-        
-        print("Loading session storage...")
-        load_session_storage(driver, "sessionstorage.json")
-
-        # Refresh to apply all storage changes
-        print("Refreshing page to apply storage...")
-        driver.refresh()
-        time.sleep(2)
-
-        # Now navigate to the target URL
+        # Navigate directly to the target URL (session is persisted in profile)
         print(f"Navigating to: {url}")
         driver.get(url)
 
@@ -146,7 +128,7 @@ def main():
         # Wait for download to complete
         print("Waiting for download to complete...")
         download_dir = Path("downloads").resolve()
-        timeout = 30
+        timeout = 5000
         start_time = time.time()
         
         while time.time() - start_time < timeout:
