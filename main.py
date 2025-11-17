@@ -364,17 +364,6 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
             print(f"   python main.py {failed_excel_path.name} {output_dir}")
             if threads > 1:
                 print(f"   python main.py {failed_excel_path.name} {output_dir} --threads {threads}")
-        
-        # Also write detailed log file
-        failed_log = output_path / f"failed_downloads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        with open(failed_log, 'w') as f:
-            f.write("FAILED DOWNLOADS\n")
-            f.write("="*60 + "\n\n")
-            for item in stats.failed:
-                f.write(f"UPC: {item['upc']}\n")
-                f.write(f"URL: {item['url']}\n")
-                f.write(f"Error: {item['error']}\n\n")
-        print(f"Detailed error log: {failed_log}")
     
     # If this was a retry, update the failed Excel file
     if is_retry and successful_upcs:
