@@ -280,21 +280,8 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
                 
                 pbar.update(1)
     else:
-        # Multi-threaded processing with progress bars
-        # Create a progress bar for each thread plus an overall progress bar
-        thread_bars = {}
-        
-        with tqdm(total=stats.total, desc="Overall Progress", unit="file", position=0) as overall_pbar:
-            # Create individual progress bars for each thread
-            for i in range(threads):
-                thread_bars[i] = tqdm(
-                    total=0, 
-                    desc=f"Thread {i+1}: Idle", 
-                    unit="step",
-                    position=i+1,
-                    leave=False
-                )
-            
+        # Multi-threaded processing with overall progress bar
+        with tqdm(total=stats.total, desc="Overall Progress", unit="file") as overall_pbar:
             with ThreadPoolExecutor(max_workers=threads) as executor:
                 # Submit all tasks
                 future_to_item = {}
@@ -303,19 +290,18 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
                     url = str(row['IMAGES LINK']).strip()
                     
                     thread_id = idx % threads
-                    pbar = thread_bars[thread_id]
                     
                     future = executor.submit(
                         download_and_rename,
                         upc, url, output_dir, debug, 
                         thread_id=thread_id,
-                        progress_bar=pbar
+                        progress_bar=None  # Don't pass progress bar in multi-threaded mode
                     )
-                    future_to_item[future] = (idx, upc, url, pbar)
+                    future_to_item[future] = (idx, upc, url)
                 
                 # Process completed tasks
                 for future in as_completed(future_to_item):
-                    idx, upc, url, pbar = future_to_item[future]
+                    idx, upc, url = future_to_item[future]
                     
                     try:
                         success, message = future.result()
@@ -341,10 +327,6 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
                         overall_pbar.write(f"✗ {upc}: Exception: {str(e)}")
                     
                     overall_pbar.update(1)
-            
-            # Close all thread progress bars
-            for pbar in thread_bars.values():
-                pbar.close()
     
     # Print summary
     stats.print_summary()
