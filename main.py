@@ -379,6 +379,9 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
     # If this was a retry, update the failed Excel file
     if is_retry and successful_upcs:
         remove_successful_from_failed_excel(excel_path, successful_upcs)
+    
+    # Return the failed Excel path for retry option
+    return failed_excel_path if stats.failed else None
 
 
 def main():
@@ -421,12 +424,42 @@ Excel file format:
         sys.exit(1)
     
     # Process the Excel file
-    process_excel(
-        excel_file=str(excel_path),
-        output_dir=args.output_dir,
-        threads=args.threads,
-        debug=args.debug
-    )
+    current_file = str(excel_path)
+    
+    while True:
+        failed_excel_path = process_excel(
+            excel_file=current_file,
+            output_dir=args.output_dir,
+            threads=args.threads,
+            debug=args.debug
+        )
+        
+        # If no failures, we're done
+        if not failed_excel_path:
+            print("\n✅ All downloads completed successfully!")
+            break
+        
+        # Ask user if they want to retry
+        print("\n" + "="*60)
+        while True:
+            response = input("Would you like to retry the failed downloads now? (Y/N/D): ").strip().upper()
+            if response in ['Y', 'YES']:
+                print("\n🔄 Retrying failed downloads...\n")
+                current_file = str(failed_excel_path)
+                break
+            elif response in ['D', 'DEBUG']:
+                print("\n🔍 Retrying failed downloads with DEBUG mode enabled...\n")
+                current_file = str(failed_excel_path)
+                args.debug = True  # Enable debug mode for retry
+                break
+            elif response in ['N', 'NO']:
+                print("\n👋 Exiting. You can retry later by running:")
+                print(f"   python main.py {failed_excel_path.name} {args.output_dir}")
+                if args.threads > 1:
+                    print(f"   python main.py {failed_excel_path.name} {args.output_dir} --threads {args.threads}")
+                return
+            else:
+                print("   Please enter Y (yes), N (no), or D (debug mode).")
 
 
 if __name__ == "__main__":
