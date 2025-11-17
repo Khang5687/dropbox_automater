@@ -1,4 +1,4 @@
-"""Cookie loading utilities for Selenium WebDriver"""
+"""Cookie and storage loading utilities for Selenium WebDriver"""
 
 import json
 
@@ -14,10 +14,22 @@ def load_json_cookies(driver, cookie_file):
             cookie_dict = {
                 "name": cookie["name"],
                 "value": cookie["value"],
-                "domain": cookie["domain"],
                 "path": cookie.get("path", "/"),
                 "secure": cookie.get("secure", False),
             }
+            
+            # __Host- and __Secure- prefixed cookies have special requirements
+            # __Host- cookies must NOT have a domain attribute
+            # For other cookies, include domain if not hostOnly
+            if cookie["name"].startswith("__Host-"):
+                # Do not add domain for __Host- cookies
+                pass
+            elif cookie.get("hostOnly", False):
+                # For hostOnly cookies, don't set domain (let browser infer it)
+                pass
+            else:
+                # Regular cookies can have domain
+                cookie_dict["domain"] = cookie["domain"]
             
             # Add optional fields if present
             if "expirationDate" in cookie and cookie["expirationDate"]:
@@ -27,13 +39,8 @@ def load_json_cookies(driver, cookie_file):
             if "httpOnly" in cookie:
                 cookie_dict["httpOnly"] = cookie["httpOnly"]
             
-            if "sameSite" in cookie and cookie["sameSite"]:
-                # Selenium accepts: 'Strict', 'Lax', or 'None'
-                same_site = cookie["sameSite"]
-                if same_site == "no_restriction":
-                    cookie_dict["sameSite"] = "None"
-                elif same_site in ["strict", "lax"]:
-                    cookie_dict["sameSite"] = same_site.capitalize()
+            # Remove sameSite to avoid compatibility issues
+            # Selenium can be picky about sameSite values
             
             driver.add_cookie(cookie_dict)
             
@@ -42,36 +49,39 @@ def load_json_cookies(driver, cookie_file):
             continue
 
 
-def load_netscape_cookies(driver, cookie_file):
-    """Load cookies from Netscape format file into Selenium driver"""
-    with open(cookie_file, "r") as f:
-        for line in f:
-            line = line.strip()
-            # Skip comments and empty lines
-            if not line or line.startswith("#"):
-                continue
+def load_local_storage(driver, storage_file):
+    """Load local storage from JSON file into Selenium driver"""
+    try:
+        with open(storage_file, "r") as f:
+            local_storage = json.load(f)
+        
+        for key, value in local_storage.items():
+            # Escape single quotes in key and value to prevent JS injection issues
+            safe_key = key.replace("'", "\\'")
+            safe_value = str(value).replace("'", "\\'")
+            driver.execute_script(f"window.localStorage.setItem('{safe_key}', '{safe_value}');")
+        
+        print(f"Loaded {len(local_storage)} local storage items")
+    except FileNotFoundError:
+        print(f"Local storage file not found: {storage_file}")
+    except Exception as e:
+        print(f"Error loading local storage: {e}")
 
-            # Parse Netscape cookie format
-            # Format: domain flag path secure expiration name value
-            try:
-                parts = line.split("\t")
-                if len(parts) == 7:
-                    domain, flag, path, secure, expiration, name, value = parts
 
-                    cookie_dict = {
-                        "name": name,
-                        "value": value,
-                        "domain": domain,
-                        "path": path,
-                        "secure": secure == "TRUE",
-                        "expiry": int(expiration) if expiration.isdigit() else None,
-                    }
-
-                    # Remove expiry if it's None
-                    if cookie_dict["expiry"] is None:
-                        del cookie_dict["expiry"]
-
-                    driver.add_cookie(cookie_dict)
-            except Exception as e:
-                print(f"Error parsing cookie line: {line[:50]}... - {e}")
-                continue
+def load_session_storage(driver, storage_file):
+    """Load session storage from JSON file into Selenium driver"""
+    try:
+        with open(storage_file, "r") as f:
+            session_storage = json.load(f)
+        
+        for key, value in session_storage.items():
+            # Escape single quotes in key and value to prevent JS injection issues
+            safe_key = key.replace("'", "\\'")
+            safe_value = str(value).replace("'", "\\'")
+            driver.execute_script(f"window.sessionStorage.setItem('{safe_key}', '{safe_value}');")
+        
+        print(f"Loaded {len(session_storage)} session storage items")
+    except FileNotFoundError:
+        print(f"Session storage file not found: {storage_file}")
+    except Exception as e:
+        print(f"Error loading session storage: {e}")

@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 import os
 import argparse
-from cookie_loader import load_json_cookies, load_netscape_cookies
+from cookie_loader import load_json_cookies, load_local_storage, load_session_storage
 
 url = "https://www.dropbox.com/scl/fo/p3za42p2itpgrsbux8gr5/AM3_CJTIrUZLERQiBKWHUIk?rlkey=gchwni1c2z79e2cx3d44tsazv&st=b9y4jc6e&dl=0"
 
@@ -26,14 +26,11 @@ def main():
     chrome_options = Options()
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument(
-        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "--user-agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'"
     )
     
-    # Enable remote debugging on port 9222 for DevTools MCP access
-    chrome_options.add_argument("--remote-debugging-port=9222")
-    
     # Optional: start with a specific user data directory to persist session
-    # chrome_options.add_argument("--user-data-dir=/tmp/chrome-debug")
+    chrome_options.add_argument("--user-data-dir=/tmp/chrome-debug")
     
     # Configure download directory and preferences
     download_dir = Path("downloads").resolve()
@@ -50,14 +47,24 @@ def main():
 
     try:
         # First, visit the domain to establish a session
-        driver.get(
-            "https://www.dropbox.com/scl/fo/p3za42p2itpgrsbux8gr5/AM3_CJTIrUZLERQiBKWHUIk?rlkey=gchwni1c2z79e2cx3d44tsazv&st=b9y4jc6e&dl=0"
-        )
+        print("Visiting Dropbox domain...")
+        driver.get("https://www.dropbox.com")
         time.sleep(2)
 
-        # Load cookies from the Netscape format file
+        # Load all storage types in the correct order
         print("Loading cookies...")
         load_json_cookies(driver, "cookies.txt")
+        
+        print("Loading local storage...")
+        load_local_storage(driver, "localstorage.json")
+        
+        print("Loading session storage...")
+        load_session_storage(driver, "sessionstorage.json")
+
+        # Refresh to apply all storage changes
+        print("Refreshing page to apply storage...")
+        driver.refresh()
+        time.sleep(2)
 
         # Now navigate to the target URL
         print(f"Navigating to: {url}")
