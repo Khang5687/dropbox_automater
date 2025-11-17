@@ -141,7 +141,7 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
     Process Excel file and download images.
     
     Args:
-        excel_file: Path to Excel file with UPC and "IMAGES_LINK" columns
+        excel_file: Path to Excel file with UPC and "IMAGES LINK" columns
         output_dir: Directory to save downloaded files
         threads: Number of parallel download threads
         debug: Enable debug output
@@ -155,13 +155,13 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
         sys.exit(1)
     
     # Validate columns
-    if 'UPC' not in df.columns or 'IMAGES_LINK' not in df.columns:
-        print("✗ Error: Excel file must contain 'UPC' and 'IMAGES_LINK' columns")
+    if 'UPC' not in df.columns or 'IMAGES LINK' not in df.columns:
+        print("✗ Error: Excel file must contain 'UPC' and 'IMAGES LINK' columns")
         print(f"  Found columns: {', '.join(df.columns)}")
         sys.exit(1)
     
     # Filter out rows with missing data
-    df = df.dropna(subset=['UPC', 'IMAGES_LINK'])
+    df = df.dropna(subset=['UPC', 'IMAGES LINK'])
     
     # Create output directory
     output_path = Path(output_dir)
@@ -181,7 +181,7 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
         with tqdm(total=stats.total, desc="Processing", unit="file", position=0) as pbar:
             for idx, row in df.iterrows():
                 upc = str(row['UPC']).strip()
-                url = str(row['IMAGES_LINK']).strip()
+                url = str(row['IMAGES LINK']).strip()
                 
                 pbar.set_description(f"Processing {upc}")
                 
@@ -220,7 +220,7 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
                 future_to_item = {}
                 for idx, row in df.iterrows():
                     upc = str(row['UPC']).strip()
-                    url = str(row['IMAGES_LINK']).strip()
+                    url = str(row['IMAGES LINK']).strip()
                     
                     thread_id = idx % threads
                     pbar = thread_bars[thread_id]
@@ -289,7 +289,7 @@ Example:
 
 Excel file format:
   Column 1: UPC (product code)
-  Column 2: IMAGES_LINK (Dropbox shared folder URL)
+  Column 2: IMAGES LINK (Dropbox shared folder URL)
         """
     )
     

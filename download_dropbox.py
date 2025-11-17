@@ -53,7 +53,7 @@ def download_first_file(url, output_dir, debug=False, use_alt_method=False, user
     else:
         log("Warning: useragent.txt not found, using default user agent")
     
-    # chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--headless")
     chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
     
     # Configure download directory and preferences
