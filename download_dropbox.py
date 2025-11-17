@@ -53,7 +53,18 @@ def download_first_file(url, output_dir, debug=False, use_alt_method=False, user
     else:
         log("Warning: useragent.txt not found, using default user agent")
     
-    chrome_options.add_argument("--headless")
+    # Headless mode with Windows compatibility fixes
+    chrome_options.add_argument("--headless=new")  # Use new headless mode (more stable)
+    chrome_options.add_argument("--no-sandbox")  # Required for Windows in some environments
+    chrome_options.add_argument("--disable-dev-shm-usage")  # Overcome limited resource problems
+    chrome_options.add_argument("--disable-gpu")  # Disable GPU hardware acceleration
+    chrome_options.add_argument("--disable-software-rasterizer")
+    chrome_options.add_argument("--window-size=1920,1080")  # Set window size for headless
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-dev-tools")
+    chrome_options.add_argument("--remote-debugging-port=0")  # Use random port to avoid conflicts
+    
+    # Use unique user data directory to prevent conflicts between threads
     chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
     
     # Configure download directory and preferences
@@ -69,7 +80,23 @@ def download_first_file(url, output_dir, debug=False, use_alt_method=False, user
     # Suppress Selenium logs
     chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
     
-    driver = webdriver.Chrome(options=chrome_options)
+    # Set up Chrome service with explicit log configuration
+    service = Service()
+    service.log_path = os.devnull  # Suppress ChromeDriver logs
+    
+    driver = None
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                log(f"Chrome launch attempt {attempt + 1} failed, retrying...")
+                time.sleep(2)  # Wait before retry
+            else:
+                log(f"Failed to launch Chrome after {max_retries} attempts: {e}")
+                raise
 
     try:
         update_progress("Loading page")

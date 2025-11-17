@@ -97,8 +97,15 @@ def download_and_rename(upc, image_url, output_dir, debug=False, thread_id=0, pr
         temp_dir = Path(output_dir) / f".tmp_{thread_id}_{upc}"
         temp_dir.mkdir(parents=True, exist_ok=True)
         
-        # Use a unique Chrome profile per thread
-        user_data_dir = f"/tmp/chrome-download-{thread_id}"
+        # Use a unique Chrome profile per thread and process
+        # On Windows, use temp directory; on Unix, use /tmp
+        import platform
+        import tempfile
+        if platform.system() == "Windows":
+            base_temp = tempfile.gettempdir()
+            user_data_dir = f"{base_temp}\\chrome-download-{thread_id}-{upc}"
+        else:
+            user_data_dir = f"/tmp/chrome-download-{thread_id}"
         
         try:
             # Download the file
@@ -126,12 +133,21 @@ def download_and_rename(upc, image_url, output_dir, debug=False, thread_id=0, pr
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
             
+            # Clean up Chrome user data directory to prevent accumulation
+            user_data_path = Path(user_data_dir)
+            if user_data_path.exists():
+                shutil.rmtree(user_data_path, ignore_errors=True)
+            
             return (True, f"Downloaded as {final_path.name}")
             
         finally:
             # Clean up temp directory even if download failed
             if temp_dir.exists():
                 shutil.rmtree(temp_dir, ignore_errors=True)
+            # Clean up Chrome user data directory
+            user_data_path = Path(user_data_dir)
+            if user_data_path.exists():
+                shutil.rmtree(user_data_path, ignore_errors=True)
         
     except Exception as e:
         return (False, f"Error: {str(e)}")
