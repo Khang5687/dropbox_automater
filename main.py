@@ -1,208 +1,299 @@
-url = "https://www.dropbox.com/scl/fo/p3za42p2itpgrsbux8gr5/AM3_CJTIrUZLERQiBKWHUIk?rlkey=gchwni1c2z79e2cx3d44tsazv&st=b9y4jc6e&dl=0"
+#!/usr/bin/env python3
+"""
+Batch download images from Dropbox shared folders using Excel file input.
+"""
 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException
-import time
-from pathlib import Path
-import os
 import argparse
+import sys
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import pandas as pd
+from datetime import datetime
+import shutil
+from download_dropbox import download_first_file
 
 
-def load_netscape_cookies(driver, cookie_file):
-    """Load cookies from Netscape format file into Selenium driver"""
-    with open(cookie_file, "r") as f:
-        for line in f:
-            line = line.strip()
-            # Skip comments and empty lines
-            if not line or line.startswith("#"):
-                continue
+class DownloadStats:
+    """Track download statistics and failures"""
+    def __init__(self):
+        self.total = 0
+        self.completed = 0
+        self.skipped = 0
+        self.failed = []
+        
+    def add_completed(self):
+        self.completed += 1
+        
+    def add_skipped(self):
+        self.skipped += 1
+        
+    def add_failed(self, upc, url, error):
+        self.failed.append({
+            'upc': upc,
+            'url': url,
+            'error': str(error)
+        })
+        
+    def print_summary(self):
+        print("\n" + "="*60)
+        print("DOWNLOAD SUMMARY")
+        print("="*60)
+        print(f"Total items:     {self.total}")
+        print(f"Downloaded:      {self.completed}")
+        print(f"Skipped:         {self.skipped}")
+        print(f"Failed:          {len(self.failed)}")
+        print("="*60)
+        
+        if self.failed:
+            print("\nFAILED DOWNLOADS:")
+            for item in self.failed:
+                print(f"  UPC: {item['upc']}")
+                print(f"  URL: {item['url']}")
+                print(f"  Error: {item['error']}")
+                print()
 
-            # Parse Netscape cookie format
-            # Format: domain flag path secure expiration name value
-            try:
-                parts = line.split("\t")
-                if len(parts) == 7:
-                    domain, flag, path, secure, expiration, name, value = parts
 
-                    cookie_dict = {
-                        "name": name,
-                        "value": value,
-                        "domain": domain,
-                        "path": path,
-                        "secure": secure == "TRUE",
-                        "expiry": int(expiration) if expiration.isdigit() else None,
-                    }
+def check_existing_file(output_dir, upc):
+    """
+    Check if a file with the given UPC already exists in the output directory.
+    Returns the file path if found, None otherwise.
+    """
+    output_path = Path(output_dir)
+    if not output_path.exists():
+        return None
+    
+    # Check for files starting with the UPC
+    for file in output_path.iterdir():
+        if file.is_file() and file.stem == str(upc):
+            return file
+    
+    return None
 
-                    # Remove expiry if it's None
-                    if cookie_dict["expiry"] is None:
-                        del cookie_dict["expiry"]
 
-                    driver.add_cookie(cookie_dict)
-            except Exception as e:
-                print(f"Error parsing cookie line: {line[:50]}... - {e}")
-                continue
+def download_and_rename(upc, image_url, output_dir, debug=False, thread_id=0):
+    """
+    Download the first image from a Dropbox folder and rename it with the UPC.
+    
+    Args:
+        upc: UPC code to use as filename
+        image_url: Dropbox shared folder URL
+        output_dir: Directory to save the file
+        debug: Enable debug output
+        thread_id: Thread identifier for unique Chrome profiles
+        
+    Returns:
+        Tuple of (success: bool, message: str)
+    """
+    try:
+        # Check if file already exists
+        existing = check_existing_file(output_dir, upc)
+        if existing:
+            return (True, f"Skipped (already exists: {existing.name})")
+        
+        # Create a unique temp directory for this download
+        temp_dir = Path(output_dir) / f".tmp_{thread_id}_{upc}"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Use a unique Chrome profile per thread
+        user_data_dir = f"/tmp/chrome-download-{thread_id}"
+        
+        try:
+            # Download the file
+            downloaded_file = download_first_file(
+                url=image_url,
+                output_dir=str(temp_dir),
+                debug=debug,
+                use_alt_method=False,
+                user_data_dir=user_data_dir
+            )
+            
+            if not downloaded_file or not downloaded_file.exists():
+                return (False, "Download failed - no file returned")
+            
+            # Get the file extension
+            extension = downloaded_file.suffix
+            
+            # Rename and move to output directory
+            final_path = Path(output_dir) / f"{upc}{extension}"
+            shutil.move(str(downloaded_file), str(final_path))
+            
+            # Clean up temp directory
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+            
+            return (True, f"Downloaded as {final_path.name}")
+            
+        finally:
+            # Clean up temp directory even if download failed
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir, ignore_errors=True)
+        
+    except Exception as e:
+        return (False, f"Error: {str(e)}")
+
+
+def process_excel(excel_file, output_dir, threads=1, debug=False):
+    """
+    Process Excel file and download images.
+    
+    Args:
+        excel_file: Path to Excel file with UPC and "IMAGES_LINK" columns
+        output_dir: Directory to save downloaded files
+        threads: Number of parallel download threads
+        debug: Enable debug output
+    """
+    # Read Excel file
+    print(f"Reading Excel file: {excel_file}")
+    try:
+        df = pd.read_excel(excel_file)
+    except Exception as e:
+        print(f"✗ Error reading Excel file: {e}")
+        sys.exit(1)
+    
+    # Validate columns
+    if 'UPC' not in df.columns or 'IMAGES_LINK' not in df.columns:
+        print("✗ Error: Excel file must contain 'UPC' and 'IMAGES_LINK' columns")
+        print(f"  Found columns: {', '.join(df.columns)}")
+        sys.exit(1)
+    
+    # Filter out rows with missing data
+    df = df.dropna(subset=['UPC', 'IMAGES_LINK'])
+    
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    stats = DownloadStats()
+    stats.total = len(df)
+    
+    print(f"Found {stats.total} items to process")
+    print(f"Output directory: {output_path.resolve()}")
+    print(f"Threads: {threads}")
+    print()
+    
+    # Process downloads
+    if threads == 1:
+        # Single-threaded processing
+        for idx, row in df.iterrows():
+            upc = str(row['UPC']).strip()
+            url = str(row['IMAGES_LINK']).strip()
+            
+            print(f"[{idx+1}/{stats.total}] Processing UPC: {upc}")
+            
+            success, message = download_and_rename(upc, url, output_dir, debug, thread_id=0)
+            
+            if success:
+                if "Skipped" in message:
+                    stats.add_skipped()
+                    print(f"  ⊘ {message}")
+                else:
+                    stats.add_completed()
+                    print(f"  ✓ {message}")
+            else:
+                stats.add_failed(upc, url, message)
+                print(f"  ✗ {message}")
+    else:
+        # Multi-threaded processing
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            # Submit all tasks
+            future_to_item = {}
+            for idx, row in df.iterrows():
+                upc = str(row['UPC']).strip()
+                url = str(row['IMAGES_LINK']).strip()
+                
+                future = executor.submit(
+                    download_and_rename,
+                    upc, url, output_dir, debug, 
+                    thread_id=idx % threads
+                )
+                future_to_item[future] = (idx, upc, url)
+            
+            # Process completed tasks
+            for future in as_completed(future_to_item):
+                idx, upc, url = future_to_item[future]
+                
+                print(f"[{stats.completed + stats.skipped + len(stats.failed) + 1}/{stats.total}] UPC: {upc}")
+                
+                try:
+                    success, message = future.result()
+                    
+                    if success:
+                        if "Skipped" in message:
+                            stats.add_skipped()
+                            print(f"  ⊘ {message}")
+                        else:
+                            stats.add_completed()
+                            print(f"  ✓ {message}")
+                    else:
+                        stats.add_failed(upc, url, message)
+                        print(f"  ✗ {message}")
+                        
+                except Exception as e:
+                    stats.add_failed(upc, url, str(e))
+                    print(f"  ✗ Exception: {str(e)}")
+    
+    # Print summary
+    stats.print_summary()
+    
+    # Write failed items to a file if any
+    if stats.failed:
+        failed_file = output_path / f"failed_downloads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(failed_file, 'w') as f:
+            f.write("FAILED DOWNLOADS\n")
+            f.write("="*60 + "\n\n")
+            for item in stats.failed:
+                f.write(f"UPC: {item['upc']}\n")
+                f.write(f"URL: {item['url']}\n")
+                f.write(f"Error: {item['error']}\n\n")
+        print(f"\nFailed downloads logged to: {failed_file}")
 
 
 def main():
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description='Download first file from Dropbox shared folder')
-    parser.add_argument('--url', action='store_true', 
-                       help='Use URL-based download instead of clicking the download button')
-    args = parser.parse_args()
-    
-    # Set up Chrome options for remote debugging
-    # This enables Chrome DevTools Protocol so MCP can access the browser
-    chrome_options = Options()
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_argument(
-        "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    parser = argparse.ArgumentParser(
+        description='Batch download images from Dropbox using Excel file input',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Example:
+  python main.py ./data/Book1.xlsx output
+  python main.py ./data/Book1.xlsx output --threads 4
+  python main.py ./data/Book1.xlsx output --threads 4 --debug
+
+Excel file format:
+  Column 1: UPC (product code)
+  Column 2: IMAGES_LINK (Dropbox shared folder URL)
+        """
     )
     
-    # Enable remote debugging on port 9222 for DevTools MCP access
-    chrome_options.add_argument("--remote-debugging-port=9222")
+    parser.add_argument('excel_file', help='Path to Excel file (.xlsx)')
+    parser.add_argument('output_dir', help='Output directory for downloaded files')
+    parser.add_argument('--threads', type=int, default=1,
+                       help='Number of parallel download threads (default: 1)')
+    parser.add_argument('--debug', action='store_true',
+                       help='Enable verbose debug output')
     
-    # Optional: start with a specific user data directory to persist session
-    # chrome_options.add_argument("--user-data-dir=/tmp/chrome-debug")
+    args = parser.parse_args()
     
-    # Configure download directory and preferences
-    download_dir = Path("downloads").resolve()
-    download_dir.mkdir(exist_ok=True)
+    # Validate inputs
+    excel_path = Path(args.excel_file)
+    if not excel_path.exists():
+        print(f"✗ Error: Excel file not found: {excel_path}")
+        sys.exit(1)
     
-    chrome_options.add_experimental_option("prefs", {
-        "download.default_directory": str(download_dir),
-        "download.prompt_for_download": False,
-        "safebrowsing.enabled": True,
-    })
-
-    # Initialize the driver
-    driver = webdriver.Chrome(options=chrome_options)
-
-    try:
-        # First, visit the domain to establish a session
-        driver.get(
-            "https://www.dropbox.com/scl/fo/p3za42p2itpgrsbux8gr5/AM3_CJTIrUZLERQiBKWHUIk?rlkey=gchwni1c2z79e2cx3d44tsazv&st=b9y4jc6e&dl=0"
-        )
-        time.sleep(2)
-
-        # Load cookies from the Netscape format file
-        print("Loading cookies...")
-        load_netscape_cookies(driver, "cookies.txt")
-
-        # Now navigate to the target URL
-        print(f"Navigating to: {url}")
-        driver.get(url)
-
-        # Wait for the grid to be present
-        print("Waiting for Dropbox grid to load...")
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="sl-grid-body"]'))
-        )
-        
-        # Handle cookie consent banner if present
-        try:
-            print("Checking for cookie consent banner...")
-            consent_btn = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="accept_all_cookies_button"]'))
-            )
-            consent_btn.click()
-            print("Cookie consent accepted")
-            time.sleep(1)
-        except TimeoutException:
-            print("No cookie banner detected")
-        
-        # Locate the first file card
-        print("Locating the first file in the grid...")
-        grid = driver.find_element(By.CSS_SELECTOR, '[data-testid="sl-grid-body"]')
-        
-        # Wait for at least one card to appear
-        WebDriverWait(driver, 10).until(
-            lambda d: len(grid.find_elements(By.CSS_SELECTOR, 'li._sl-card_to1nz_25')) > 0
-        )
-        
-        first_card = grid.find_elements(By.CSS_SELECTOR, 'li._sl-card_to1nz_25')[0]
-        
-        # Get file name and link for logging
-        try:
-            file_link = first_card.find_element(By.CSS_SELECTOR, '[data-testid="grid-link"]')
-            file_name = file_link.text
-            preview_url = file_link.get_attribute('href')
-            print(f"First file found: {file_name}")
-        except:
-            file_name = "unknown"
-            preview_url = None
-            print("First file found (name could not be retrieved)")
-        
-        # Download using URL-based method or button click
-        if args.url and preview_url:
-            # URL-based download: replace dl=0 with dl=1
-            print("Using URL-based download method...")
-            download_url = preview_url.replace('dl=0', 'dl=1')
-            print(f"Navigating to download URL: {download_url}")
-            driver.get(download_url)
-            print(f"Download initiated for: {file_name}")
-        else:
-            # Button-click method (default)
-            print("Using button-click download method...")
-            
-            # Hover over the card to reveal download controls
-            print("Hovering over file card to reveal download button...")
-            ActionChains(driver).move_to_element(first_card).pause(0.5).perform()
-            
-            # Wait for and click the download button
-            print("Clicking download button...")
-            try:
-                download_btn = WebDriverWait(first_card, 10).until(
-                    EC.element_to_be_clickable(
-                        (By.XPATH, './/button[.//svg[@aria-label="Download"]]')
-                    )
-                )
-                download_btn.click()
-            except ElementClickInterceptedException:
-                # Fallback to JavaScript click if regular click is intercepted
-                print("Regular click intercepted, using JavaScript click...")
-                download_btn = first_card.find_element(By.XPATH, './/button[.//svg[@aria-label="Download"]]')
-                driver.execute_script("arguments[0].click();", download_btn)
-            
-            print(f"Download initiated for: {file_name}")
-        
-        # Wait for download to complete
-        print("Waiting for download to complete...")
-        download_dir = Path("downloads").resolve()
-        timeout = 30
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            # Check if any .crdownload files exist (Chrome's in-progress download extension)
-            crdownload_files = list(download_dir.glob("*.crdownload"))
-            if crdownload_files:
-                print("Download in progress...")
-                time.sleep(1)
-                continue
-            
-            # Check if any files were downloaded
-            downloaded_files = [f for f in download_dir.iterdir() if f.is_file()]
-            if downloaded_files:
-                print(f"\n{'='*60}")
-                print(f"Download complete!")
-                print(f"File saved to: {downloaded_files[-1]}")
-                print(f"{'='*60}\n")
-                break
-            
-            time.sleep(1)
-        else:
-            print("Download timeout - file may still be downloading")
-        
-        # Keep browser open for inspection
-        input("Press Enter to close the browser...")
-
-    finally:
-        driver.quit()
+    if not excel_path.suffix.lower() in ['.xlsx', '.xls']:
+        print(f"✗ Error: File must be an Excel file (.xlsx or .xls)")
+        sys.exit(1)
+    
+    if args.threads < 1:
+        print(f"✗ Error: Threads must be at least 1")
+        sys.exit(1)
+    
+    # Process the Excel file
+    process_excel(
+        excel_file=str(excel_path),
+        output_dir=args.output_dir,
+        threads=args.threads,
+        debug=args.debug
+    )
 
 
 if __name__ == "__main__":

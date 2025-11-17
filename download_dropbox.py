@@ -10,18 +10,27 @@ import time
 from pathlib import Path
 import os
 import argparse
+import sys
 
-url = "https://www.dropbox.com/scl/fo/p3za42p2itpgrsbux8gr5/AM3_CJTIrUZLERQiBKWHUIk?rlkey=gchwni1c2z79e2cx3d44tsazv&st=b9y4jc6e&dl=0"
-
-def main():
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description='Download first file from Dropbox shared folder')
-    parser.add_argument('--alt', action='store_true', 
-                       help='Use button-click download method instead of URL-based download (default)')
-    args = parser.parse_args()
+def download_first_file(url, output_dir, debug=False, use_alt_method=False, user_data_dir="/tmp/chrome-debug"):
+    """
+    Download the first file from a Dropbox shared folder.
     
-    # Set up Chrome options for remote debugging
-    # This enables Chrome DevTools Protocol so MCP can access the browser
+    Args:
+        url: Dropbox shared folder URL
+        output_dir: Directory to save the downloaded file
+        debug: If True, print verbose debug messages
+        use_alt_method: If True, use button-click method instead of URL-based download
+        user_data_dir: Chrome user data directory for session persistence
+        
+    Returns:
+        Path to downloaded file or None if failed
+    """
+    def log(msg):
+        if debug:
+            print(msg)
+    
+    # Set up Chrome options
     chrome_options = Options()
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     
@@ -31,53 +40,49 @@ def main():
         user_agent = user_agent_file.read_text().strip()
         chrome_options.add_argument(f"--user-agent={user_agent}")
     else:
-        print("Warning: useragent.txt not found, using default user agent")
+        log("Warning: useragent.txt not found, using default user agent")
+    
     chrome_options.add_argument("--headless")
-    
-    # Enable remote debugging on port 9222 for DevTools MCP access
-    # chrome_options.add_argument("--remote-debugging-port=9222")
-    
-    # Optional: start with a specific user data directory to persist session
-    chrome_options.add_argument("--user-data-dir=/tmp/chrome-debug2")
+    chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
     
     # Configure download directory and preferences
-    download_dir = Path("downloads").resolve()
-    download_dir.mkdir(exist_ok=True)
+    output_path = Path(output_dir).resolve()
+    output_path.mkdir(parents=True, exist_ok=True)
     
     chrome_options.add_experimental_option("prefs", {
-        "download.default_directory": str(download_dir),
+        "download.default_directory": str(output_path),
         "download.prompt_for_download": False,
         "safebrowsing.enabled": True,
     })
-
-    # Initialize the driver
+    
+    # Suppress Selenium logs
+    chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    
     driver = webdriver.Chrome(options=chrome_options)
 
     try:
-        # Navigate directly to the target URL (session is persisted in profile)
-        print(f"Navigating to: {url}")
+        log(f"Navigating to: {url}")
         driver.get(url)
 
-        # Wait for the grid to be present
-        print("Waiting for Dropbox grid to load...")
+        log("Waiting for Dropbox grid to load...")
         WebDriverWait(driver, 60).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="sl-grid-body"]'))
         )
         
         # Handle cookie consent banner if present
         try:
-            print("Checking for cookie consent banner...")
+            log("Checking for cookie consent banner...")
             consent_btn = WebDriverWait(driver, 5).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="accept_all_cookies_button"]'))
             )
             consent_btn.click()
-            print("Cookie consent accepted")
+            log("Cookie consent accepted")
             time.sleep(1)
         except TimeoutException:
-            print("No cookie banner detected")
+            log("No cookie banner detected")
         
         # Locate the first file card
-        print("Locating the first file in the grid...")
+        log("Locating the first file in the grid...")
         grid = driver.find_element(By.CSS_SELECTOR, '[data-testid="sl-grid-body"]')
         
         # Wait for at least one card to appear
@@ -92,23 +97,23 @@ def main():
             file_link = first_card.find_element(By.CSS_SELECTOR, '[data-testid="grid-link"]')
             file_name = file_link.text
             preview_url = file_link.get_attribute('href')
-            print(f"First file found: {file_name}")
+            log(f"First file found: {file_name}")
         except:
             file_name = "unknown"
             preview_url = None
-            print("First file found (name could not be retrieved)")
+            log("First file found (name could not be retrieved)")
         
         # Download using URL-based method or button click
-        if args.alt:
+        if use_alt_method:
             # Button-click method (alternative)
-            print("Using button-click download method...")
+            log("Using button-click download method...")
             
             # Hover over the card to reveal download controls
-            print("Hovering over file card to reveal download button...")
+            log("Hovering over file card to reveal download button...")
             ActionChains(driver).move_to_element(first_card).pause(0.5).perform()
             
             # Wait for and click the download button
-            print("Clicking download button...")
+            log("Clicking download button...")
             try:
                 download_btn = WebDriverWait(first_card, 10).until(
                     EC.element_to_be_clickable(
@@ -118,51 +123,85 @@ def main():
                 download_btn.click()
             except ElementClickInterceptedException:
                 # Fallback to JavaScript click if regular click is intercepted
-                print("Regular click intercepted, using JavaScript click...")
+                log("Regular click intercepted, using JavaScript click...")
                 download_btn = first_card.find_element(By.XPATH, './/button[.//svg[@aria-label="Download"]]')
                 driver.execute_script("arguments[0].click();", download_btn)
             
-            print(f"Download initiated for: {file_name}")
+            log(f"Download initiated for: {file_name}")
         else:
             # URL-based download: replace dl=0 with dl=1 (default)
-            print("Using URL-based download method...")
+            log("Using URL-based download method...")
             download_url = preview_url.replace('dl=0', 'dl=1')
-            print(f"Navigating to download URL: {download_url}")
+            log(f"Navigating to download URL: {download_url}")
             driver.get(download_url)
-            print(f"Download initiated for: {file_name}")
+            log(f"Download initiated for: {file_name}")
         
         # Wait for download to complete
-        print("Waiting for download to complete...")
-        download_dir = Path("downloads").resolve()
-        timeout = 1000
+        log("Waiting for download to complete...")
+        timeout = 120
         start_time = time.time()
+        downloaded_file = None
+        
+        # Get initial file list
+        initial_files = set(f.name for f in output_path.iterdir() if f.is_file())
         
         while time.time() - start_time < timeout:
             # Check if any .crdownload files exist (Chrome's in-progress download extension)
-            crdownload_files = list(download_dir.glob("*.crdownload"))
+            crdownload_files = list(output_path.glob("*.crdownload"))
             if crdownload_files:
-                print("Download in progress...")
+                log("Download in progress...")
                 time.sleep(1)
                 continue
             
-            # Check if any files were downloaded
-            downloaded_files = [f for f in download_dir.iterdir() if f.is_file()]
-            if downloaded_files:
-                print(f"\n{'='*60}")
-                print(f"Download complete!")
-                print(f"File saved to: {downloaded_files[-1]}")
-                print(f"{'='*60}\n")
+            # Check if any new files were downloaded
+            current_files = set(f.name for f in output_path.iterdir() if f.is_file())
+            new_files = current_files - initial_files
+            
+            if new_files:
+                downloaded_file = output_path / list(new_files)[0]
+                log(f"Download complete: {downloaded_file}")
                 break
             
             time.sleep(1)
         else:
-            print("Download timeout - file may still be downloading")
+            log("Download timeout - file may still be downloading")
+            return None
         
-        # Keep browser open for inspection
-        input("Press Enter to close the browser...")
+        return downloaded_file
 
+    except Exception as e:
+        log(f"Error during download: {str(e)}")
+        return None
     finally:
         driver.quit()
+
+
+def main():
+    """CLI entry point for testing download_dropbox.py standalone"""
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Download first file from Dropbox shared folder')
+    parser.add_argument('url', help='Dropbox shared folder URL')
+    parser.add_argument('--alt', action='store_true', 
+                       help='Use button-click download method instead of URL-based download (default)')
+    parser.add_argument('--debug', action='store_true',
+                       help='Enable verbose debug output')
+    parser.add_argument('--output', default='downloads',
+                       help='Output directory for downloaded files (default: downloads)')
+    args = parser.parse_args()
+    
+    result = download_first_file(
+        url=args.url,
+        output_dir=args.output,
+        debug=args.debug,
+        use_alt_method=args.alt,
+        user_data_dir="/tmp/chrome-debug2"
+    )
+    
+    if result:
+        print(f"✓ Downloaded: {result}")
+    else:
+        print("✗ Download failed")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
