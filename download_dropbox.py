@@ -11,8 +11,9 @@ from pathlib import Path
 import os
 import argparse
 import sys
+from tqdm import tqdm
 
-def download_first_file(url, output_dir, debug=False, use_alt_method=False, user_data_dir="/tmp/chrome-debug"):
+def download_first_file(url, output_dir, debug=False, use_alt_method=False, user_data_dir="/tmp/chrome-debug", progress_bar=None, file_label=""):
     """
     Download the first file from a Dropbox shared folder.
     
@@ -22,13 +23,23 @@ def download_first_file(url, output_dir, debug=False, use_alt_method=False, user
         debug: If True, print verbose debug messages
         use_alt_method: If True, use button-click method instead of URL-based download
         user_data_dir: Chrome user data directory for session persistence
+        progress_bar: Optional tqdm progress bar instance
+        file_label: Label for the file being downloaded (e.g., UPC)
         
     Returns:
         Path to downloaded file or None if failed
     """
     def log(msg):
         if debug:
-            print(msg)
+            if progress_bar:
+                progress_bar.write(msg)
+            else:
+                print(msg)
+    
+    def update_progress(msg):
+        """Update progress bar description"""
+        if progress_bar:
+            progress_bar.set_description(f"{file_label}: {msg}")
     
     # Set up Chrome options
     chrome_options = Options()
@@ -42,7 +53,7 @@ def download_first_file(url, output_dir, debug=False, use_alt_method=False, user
     else:
         log("Warning: useragent.txt not found, using default user agent")
     
-    chrome_options.add_argument("--headless")
+    # chrome_options.add_argument("--headless")
     chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
     
     # Configure download directory and preferences
@@ -61,9 +72,11 @@ def download_first_file(url, output_dir, debug=False, use_alt_method=False, user
     driver = webdriver.Chrome(options=chrome_options)
 
     try:
+        update_progress("Loading page")
         log(f"Navigating to: {url}")
         driver.get(url)
 
+        update_progress("Waiting for content")
         log("Waiting for Dropbox grid to load...")
         WebDriverWait(driver, 60).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="sl-grid-body"]'))
@@ -82,6 +95,7 @@ def download_first_file(url, output_dir, debug=False, use_alt_method=False, user
             log("No cookie banner detected")
         
         # Locate the first file card
+        update_progress("Locating file")
         log("Locating the first file in the grid...")
         grid = driver.find_element(By.CSS_SELECTOR, '[data-testid="sl-grid-body"]')
         
@@ -104,6 +118,7 @@ def download_first_file(url, output_dir, debug=False, use_alt_method=False, user
             log("First file found (name could not be retrieved)")
         
         # Download using URL-based method or button click
+        update_progress("Starting download")
         if use_alt_method:
             # Button-click method (alternative)
             log("Using button-click download method...")
@@ -137,6 +152,7 @@ def download_first_file(url, output_dir, debug=False, use_alt_method=False, user
             log(f"Download initiated for: {file_name}")
         
         # Wait for download to complete
+        update_progress("Downloading")
         log("Waiting for download to complete...")
         timeout = 120
         start_time = time.time()
@@ -146,9 +162,17 @@ def download_first_file(url, output_dir, debug=False, use_alt_method=False, user
         initial_files = set(f.name for f in output_path.iterdir() if f.is_file())
         
         while time.time() - start_time < timeout:
+            elapsed = int(time.time() - start_time)
+            
             # Check if any .crdownload files exist (Chrome's in-progress download extension)
             crdownload_files = list(output_path.glob("*.crdownload"))
             if crdownload_files:
+                # Try to get file size for progress indication
+                try:
+                    size_mb = crdownload_files[0].stat().st_size / (1024 * 1024)
+                    update_progress(f"Downloading ({size_mb:.1f} MB, {elapsed}s)")
+                except:
+                    update_progress(f"Downloading ({elapsed}s)")
                 log("Download in progress...")
                 time.sleep(1)
                 continue
@@ -159,11 +183,13 @@ def download_first_file(url, output_dir, debug=False, use_alt_method=False, user
             
             if new_files:
                 downloaded_file = output_path / list(new_files)[0]
+                update_progress("Complete")
                 log(f"Download complete: {downloaded_file}")
                 break
             
             time.sleep(1)
         else:
+            update_progress("Timeout")
             log("Download timeout - file may still be downloading")
             return None
         

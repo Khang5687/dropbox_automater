@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 from datetime import datetime
 import shutil
+from tqdm import tqdm
 from download_dropbox import download_first_file
 
 
@@ -70,7 +71,7 @@ def check_existing_file(output_dir, upc):
     return None
 
 
-def download_and_rename(upc, image_url, output_dir, debug=False, thread_id=0):
+def download_and_rename(upc, image_url, output_dir, debug=False, thread_id=0, progress_bar=None):
     """
     Download the first image from a Dropbox folder and rename it with the UPC.
     
@@ -80,6 +81,7 @@ def download_and_rename(upc, image_url, output_dir, debug=False, thread_id=0):
         output_dir: Directory to save the file
         debug: Enable debug output
         thread_id: Thread identifier for unique Chrome profiles
+        progress_bar: Optional tqdm progress bar instance
         
     Returns:
         Tuple of (success: bool, message: str)
@@ -104,7 +106,9 @@ def download_and_rename(upc, image_url, output_dir, debug=False, thread_id=0):
                 output_dir=str(temp_dir),
                 debug=debug,
                 use_alt_method=False,
-                user_data_dir=user_data_dir
+                user_data_dir=user_data_dir,
+                progress_bar=progress_bar,
+                file_label=str(upc)
             )
             
             if not downloaded_file or not downloaded_file.exists():
@@ -173,64 +177,89 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
     
     # Process downloads
     if threads == 1:
-        # Single-threaded processing
-        for idx, row in df.iterrows():
-            upc = str(row['UPC']).strip()
-            url = str(row['IMAGES_LINK']).strip()
-            
-            print(f"[{idx+1}/{stats.total}] Processing UPC: {upc}")
-            
-            success, message = download_and_rename(upc, url, output_dir, debug, thread_id=0)
-            
-            if success:
-                if "Skipped" in message:
-                    stats.add_skipped()
-                    print(f"  ⊘ {message}")
-                else:
-                    stats.add_completed()
-                    print(f"  ✓ {message}")
-            else:
-                stats.add_failed(upc, url, message)
-                print(f"  ✗ {message}")
-    else:
-        # Multi-threaded processing
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            # Submit all tasks
-            future_to_item = {}
+        # Single-threaded processing with progress bar
+        with tqdm(total=stats.total, desc="Processing", unit="file", position=0) as pbar:
             for idx, row in df.iterrows():
                 upc = str(row['UPC']).strip()
                 url = str(row['IMAGES_LINK']).strip()
                 
-                future = executor.submit(
-                    download_and_rename,
-                    upc, url, output_dir, debug, 
-                    thread_id=idx % threads
-                )
-                future_to_item[future] = (idx, upc, url)
-            
-            # Process completed tasks
-            for future in as_completed(future_to_item):
-                idx, upc, url = future_to_item[future]
+                pbar.set_description(f"Processing {upc}")
                 
-                print(f"[{stats.completed + stats.skipped + len(stats.failed) + 1}/{stats.total}] UPC: {upc}")
+                success, message = download_and_rename(upc, url, output_dir, debug, thread_id=0, progress_bar=pbar)
                 
-                try:
-                    success, message = future.result()
-                    
-                    if success:
-                        if "Skipped" in message:
-                            stats.add_skipped()
-                            print(f"  ⊘ {message}")
-                        else:
-                            stats.add_completed()
-                            print(f"  ✓ {message}")
+                if success:
+                    if "Skipped" in message:
+                        stats.add_skipped()
+                        pbar.write(f"⊘ {upc}: {message}")
                     else:
-                        stats.add_failed(upc, url, message)
-                        print(f"  ✗ {message}")
+                        stats.add_completed()
+                        pbar.write(f"✓ {upc}: {message}")
+                else:
+                    stats.add_failed(upc, url, message)
+                    pbar.write(f"✗ {upc}: {message}")
+                
+                pbar.update(1)
+    else:
+        # Multi-threaded processing with progress bars
+        # Create a progress bar for each thread plus an overall progress bar
+        thread_bars = {}
+        
+        with tqdm(total=stats.total, desc="Overall Progress", unit="file", position=0) as overall_pbar:
+            # Create individual progress bars for each thread
+            for i in range(threads):
+                thread_bars[i] = tqdm(
+                    total=0, 
+                    desc=f"Thread {i+1}: Idle", 
+                    unit="step",
+                    position=i+1,
+                    leave=False
+                )
+            
+            with ThreadPoolExecutor(max_workers=threads) as executor:
+                # Submit all tasks
+                future_to_item = {}
+                for idx, row in df.iterrows():
+                    upc = str(row['UPC']).strip()
+                    url = str(row['IMAGES_LINK']).strip()
+                    
+                    thread_id = idx % threads
+                    pbar = thread_bars[thread_id]
+                    
+                    future = executor.submit(
+                        download_and_rename,
+                        upc, url, output_dir, debug, 
+                        thread_id=thread_id,
+                        progress_bar=pbar
+                    )
+                    future_to_item[future] = (idx, upc, url, pbar)
+                
+                # Process completed tasks
+                for future in as_completed(future_to_item):
+                    idx, upc, url, pbar = future_to_item[future]
+                    
+                    try:
+                        success, message = future.result()
                         
-                except Exception as e:
-                    stats.add_failed(upc, url, str(e))
-                    print(f"  ✗ Exception: {str(e)}")
+                        if success:
+                            if "Skipped" in message:
+                                stats.add_skipped()
+                                overall_pbar.write(f"⊘ {upc}: {message}")
+                            else:
+                                stats.add_completed()
+                                overall_pbar.write(f"✓ {upc}: {message}")
+                        else:
+                            stats.add_failed(upc, url, message)
+                            overall_pbar.write(f"✗ {upc}: {message}")
+                            
+                    except Exception as e:
+                        stats.add_failed(upc, url, str(e))
+                        overall_pbar.write(f"✗ {upc}: Exception: {str(e)}")
+                    
+                    overall_pbar.update(1)
+            
+            # Close all thread progress bars
+            for pbar in thread_bars.values():
+                pbar.close()
     
     # Print summary
     stats.print_summary()
