@@ -28,11 +28,12 @@ class DownloadStats:
     def add_skipped(self):
         self.skipped += 1
         
-    def add_failed(self, upc, url, error):
+    def add_failed(self, upc, url, error, row_data=None):
         self.failed.append({
             'upc': upc,
             'url': url,
-            'error': str(error)
+            'error': str(error),
+            'row_data': row_data
         })
         
     def print_summary(self):
@@ -136,6 +137,61 @@ def download_and_rename(upc, image_url, output_dir, debug=False, thread_id=0, pr
         return (False, f"Error: {str(e)}")
 
 
+def create_failed_excel(df_failed, output_dir, excel_file):
+    """
+    Create an Excel file with failed downloads.
+    
+    Args:
+        df_failed: DataFrame with failed download rows
+        output_dir: Directory where files are saved
+        excel_file: Original Excel filename
+        
+    Returns:
+        Path to the created failed Excel file
+    """
+    if df_failed.empty:
+        return None
+    
+    output_path = Path(output_dir)
+    # Extract base name from output directory (e.g., 'kim' from 'kim/' or 'output')
+    dir_name = output_path.name if output_path.name else output_path.parts[-1]
+    
+    # Save in current working directory (root), not in output_dir
+    failed_excel_path = Path.cwd() / f"failed_{dir_name}.xlsx"
+    df_failed.to_excel(failed_excel_path, index=False)
+    
+    return failed_excel_path
+
+
+def remove_successful_from_failed_excel(failed_excel_path, successful_upcs):
+    """
+    Remove successfully downloaded entries from the failed Excel file.
+    If all entries are removed, delete the file.
+    
+    Args:
+        failed_excel_path: Path to the failed Excel file
+        successful_upcs: Set of UPCs that were successfully downloaded
+    """
+    if not failed_excel_path.exists():
+        return
+    
+    try:
+        df = pd.read_excel(failed_excel_path)
+        # Remove successful entries
+        df_remaining = df[~df['UPC'].astype(str).str.strip().isin(successful_upcs)]
+        
+        if df_remaining.empty:
+            # All items succeeded, delete the failed file
+            failed_excel_path.unlink()
+            print(f"\n✓ All failed items successfully downloaded. Removed {failed_excel_path.name}")
+        else:
+            # Update the failed file with remaining items
+            df_remaining.to_excel(failed_excel_path, index=False)
+            print(f"\n✓ Updated {failed_excel_path.name} - {len(successful_upcs)} items removed, {len(df_remaining)} remaining")
+    except Exception as e:
+        print(f"\n⚠ Warning: Could not update failed Excel file: {e}")
+
+
 def process_excel(excel_file, output_dir, threads=1, debug=False):
     """
     Process Excel file and download images.
@@ -154,6 +210,12 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
         print(f"✗ Error reading Excel file: {e}")
         sys.exit(1)
     
+    # Check if this is a retry of a failed Excel file
+    excel_path = Path(excel_file)
+    is_retry = excel_path.name.startswith('failed_')
+    if is_retry:
+        print("📝 Retrying failed downloads...")
+    
     # Validate columns
     if 'UPC' not in df.columns or 'IMAGES LINK' not in df.columns:
         print("✗ Error: Excel file must contain 'UPC' and 'IMAGES LINK' columns")
@@ -169,6 +231,7 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
     
     stats = DownloadStats()
     stats.total = len(df)
+    successful_upcs = set()  # Track successful UPCs for retry scenario
     
     print(f"Found {stats.total} items to process")
     print(f"Output directory: {output_path.resolve()}")
@@ -193,9 +256,10 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
                         pbar.write(f"⊘ {upc}: {message}")
                     else:
                         stats.add_completed()
+                        successful_upcs.add(upc)
                         pbar.write(f"✓ {upc}: {message}")
                 else:
-                    stats.add_failed(upc, url, message)
+                    stats.add_failed(upc, url, message, row_data=row.to_dict())
                     pbar.write(f"✗ {upc}: {message}")
                 
                 pbar.update(1)
@@ -240,19 +304,24 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
                     try:
                         success, message = future.result()
                         
+                        # Get the row data from the original dataframe
+                        row_data = df.iloc[idx].to_dict()
+                        
                         if success:
                             if "Skipped" in message:
                                 stats.add_skipped()
                                 overall_pbar.write(f"⊘ {upc}: {message}")
                             else:
                                 stats.add_completed()
+                                successful_upcs.add(upc)
                                 overall_pbar.write(f"✓ {upc}: {message}")
                         else:
-                            stats.add_failed(upc, url, message)
+                            stats.add_failed(upc, url, message, row_data=row_data)
                             overall_pbar.write(f"✗ {upc}: {message}")
                             
                     except Exception as e:
-                        stats.add_failed(upc, url, str(e))
+                        row_data = df.iloc[idx].to_dict()
+                        stats.add_failed(upc, url, str(e), row_data=row_data)
                         overall_pbar.write(f"✗ {upc}: Exception: {str(e)}")
                     
                     overall_pbar.update(1)
@@ -264,17 +333,36 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
     # Print summary
     stats.print_summary()
     
-    # Write failed items to a file if any
+    # Handle failed downloads
     if stats.failed:
-        failed_file = output_path / f"failed_downloads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        with open(failed_file, 'w') as f:
+        # Create DataFrame from failed rows
+        failed_rows = [item['row_data'] for item in stats.failed]
+        df_failed = pd.DataFrame(failed_rows)
+        
+        # Create failed Excel file
+        failed_excel_path = create_failed_excel(df_failed, output_dir, excel_file)
+        
+        if failed_excel_path:
+            print(f"\n📋 Failed downloads saved to: {failed_excel_path}")
+            print(f"\n💡 To retry failed downloads only, run:")
+            print(f"   python main.py {failed_excel_path.name} {output_dir}")
+            if threads > 1:
+                print(f"   python main.py {failed_excel_path.name} {output_dir} --threads {threads}")
+        
+        # Also write detailed log file
+        failed_log = output_path / f"failed_downloads_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(failed_log, 'w') as f:
             f.write("FAILED DOWNLOADS\n")
             f.write("="*60 + "\n\n")
             for item in stats.failed:
                 f.write(f"UPC: {item['upc']}\n")
                 f.write(f"URL: {item['url']}\n")
                 f.write(f"Error: {item['error']}\n\n")
-        print(f"\nFailed downloads logged to: {failed_file}")
+        print(f"Detailed error log: {failed_log}")
+    
+    # If this was a retry, update the failed Excel file
+    if is_retry and successful_upcs:
+        remove_successful_from_failed_excel(excel_path, successful_upcs)
 
 
 def main():
