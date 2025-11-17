@@ -16,23 +16,29 @@ url = "https://www.dropbox.com/scl/fo/p3za42p2itpgrsbux8gr5/AM3_CJTIrUZLERQiBKWH
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Download first file from Dropbox shared folder')
-    parser.add_argument('--url', action='store_true', 
-                       help='Use URL-based download instead of clicking the download button')
+    parser.add_argument('--alt', action='store_true', 
+                       help='Use button-click download method instead of URL-based download (default)')
     args = parser.parse_args()
     
     # Set up Chrome options for remote debugging
     # This enables Chrome DevTools Protocol so MCP can access the browser
     chrome_options = Options()
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_argument(
-        "--user-agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'"
-    )
+    
+    # Load user agent from file
+    user_agent_file = Path("useragent.txt")
+    if user_agent_file.exists():
+        user_agent = user_agent_file.read_text().strip()
+        chrome_options.add_argument(f"--user-agent={user_agent}")
+    else:
+        print("Warning: useragent.txt not found, using default user agent")
+    chrome_options.add_argument("--headless")
     
     # Enable remote debugging on port 9222 for DevTools MCP access
-    chrome_options.add_argument("--remote-debugging-port=9222")
+    # chrome_options.add_argument("--remote-debugging-port=9222")
     
     # Optional: start with a specific user data directory to persist session
-    chrome_options.add_argument("--user-data-dir=/tmp/chrome-debug")
+    chrome_options.add_argument("--user-data-dir=/tmp/chrome-debug2")
     
     # Configure download directory and preferences
     download_dir = Path("downloads").resolve()
@@ -54,7 +60,7 @@ def main():
 
         # Wait for the grid to be present
         print("Waiting for Dropbox grid to load...")
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(driver, 60).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="sl-grid-body"]'))
         )
         
@@ -93,15 +99,8 @@ def main():
             print("First file found (name could not be retrieved)")
         
         # Download using URL-based method or button click
-        if args.url and preview_url:
-            # URL-based download: replace dl=0 with dl=1
-            print("Using URL-based download method...")
-            download_url = preview_url.replace('dl=0', 'dl=1')
-            print(f"Navigating to download URL: {download_url}")
-            driver.get(download_url)
-            print(f"Download initiated for: {file_name}")
-        else:
-            # Button-click method (default)
+        if args.alt:
+            # Button-click method (alternative)
             print("Using button-click download method...")
             
             # Hover over the card to reveal download controls
@@ -124,11 +123,18 @@ def main():
                 driver.execute_script("arguments[0].click();", download_btn)
             
             print(f"Download initiated for: {file_name}")
+        else:
+            # URL-based download: replace dl=0 with dl=1 (default)
+            print("Using URL-based download method...")
+            download_url = preview_url.replace('dl=0', 'dl=1')
+            print(f"Navigating to download URL: {download_url}")
+            driver.get(download_url)
+            print(f"Download initiated for: {file_name}")
         
         # Wait for download to complete
         print("Waiting for download to complete...")
         download_dir = Path("downloads").resolve()
-        timeout = 5000
+        timeout = 1000
         start_time = time.time()
         
         while time.time() - start_time < timeout:
