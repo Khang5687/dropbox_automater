@@ -357,26 +357,52 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Batch download images from Dropbox using Excel file input',
+        description='Batch download images from Dropbox shared folders using Excel file input',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Example:
-  python main.py ./data/Book1.xlsx output
-  python main.py ./data/Book1.xlsx output --threads 4
-  python main.py ./data/Book1.xlsx output --threads 4 --debug
+Examples:
+  # Basic usage
+  python main.py products.xlsx output/
+
+  # Multi-threaded download with 4 threads
+  python main.py products.xlsx output/ --threads 4
+
+  # Auto-retry failed downloads until all succeed
+  python main.py products.xlsx output/ --retry
+
+  # Auto-retry up to 3 times before giving up
+  python main.py products.xlsx output/ --retry 3
+
+  # Auto-retry with debug output
+  python main.py products.xlsx output/ --retry --debug
+
+  # Retry a previous failed download file
+  python main.py failed_output.xlsx output/ --threads 4
 
 Excel file format:
-  Column 1: UPC (product code)
-  Column 2: IMAGES LINK (Dropbox shared folder URL)
+  Required columns:
+    - UPC: Product UPC code (used as filename)
+    - IMAGES LINK: Dropbox shared folder URL
+
+Notes:
+  - Files are saved as <UPC>.<extension> in the output directory
+  - Failed downloads are saved to failed_<output_dir>.xlsx for retry
+  - Existing files are automatically skipped
         """
     )
     
-    parser.add_argument('excel_file', help='Path to Excel file (.xlsx)')
-    parser.add_argument('output_dir', help='Output directory for downloaded files')
-    parser.add_argument('--threads', type=int, default=1,
+    parser.add_argument('excel_file', 
+                       help='Path to Excel file (.xlsx) containing UPC and IMAGES LINK columns')
+    parser.add_argument('output_dir', 
+                       help='Output directory for downloaded files')
+    parser.add_argument('-t', '--threads', type=int, default=1,
+                       metavar='N',
                        help='Number of parallel download threads (default: 1)')
-    parser.add_argument('--debug', action='store_true',
-                       help='Enable verbose debug output')
+    parser.add_argument('-r', '--retry', nargs='?', const=-1, type=int, default=0,
+                       metavar='N',
+                       help='Auto-retry failed downloads. Use without value for unlimited retries, or specify max retry attempts (e.g., --retry 3)')
+    parser.add_argument('-d', '--debug', action='store_true',
+                       help='Enable verbose debug output for troubleshooting')
     
     args = parser.parse_args()
     
@@ -394,8 +420,14 @@ Excel file format:
         print(f"✗ Error: Threads must be at least 1")
         sys.exit(1)
     
+    if args.retry < -1:
+        print(f"✗ Error: Retry value must be -1 (unlimited), 0 (disabled), or a positive number")
+        sys.exit(1)
+    
     # Process the Excel file
     current_file = str(excel_path)
+    retry_count = 0
+    max_retries = args.retry  # -1 = unlimited, 0 = disabled, >0 = specific limit
     
     while True:
         failed_excel_path = process_excel(
@@ -410,7 +442,31 @@ Excel file format:
             print("\n✅ All downloads completed successfully!")
             break
         
-        # Ask user if they want to retry
+        # Check if auto-retry is enabled
+        if max_retries != 0:
+            # Auto-retry mode
+            retry_count += 1
+            
+            # Check if we've reached the retry limit
+            if max_retries > 0 and retry_count > max_retries:
+                print(f"\n⚠️  Reached maximum retry limit ({max_retries} attempts)")
+                print(f"📋 Remaining failures saved to: {failed_excel_path.name}")
+                print(f"\n💡 To continue retrying, run:")
+                print(f"   python main.py {failed_excel_path.name} {args.output_dir}")
+                if args.threads > 1:
+                    print(f"   python main.py {failed_excel_path.name} {args.output_dir} --threads {args.threads}")
+                break
+            
+            # Auto-retry
+            if max_retries == -1:
+                print(f"\n🔄 Auto-retry #{retry_count} - Retrying failed downloads...\n")
+            else:
+                print(f"\n🔄 Auto-retry {retry_count}/{max_retries} - Retrying failed downloads...\n")
+            
+            current_file = str(failed_excel_path)
+            continue
+        
+        # Interactive mode - ask user if they want to retry
         print("\n" + "="*60)
         while True:
             response = input("Would you like to retry the failed downloads now? (Y/N/D): ").strip().upper()
