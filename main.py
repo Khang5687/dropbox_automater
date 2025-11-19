@@ -55,12 +55,17 @@ class DownloadStats:
                 print()
 
 
-def check_existing_file(output_dir, upc):
+def check_existing_file(output_dir, upc, category=None):
     """
     Check if a file with the given UPC already exists in the output directory.
+    If category is provided, checks in the category subdirectory.
     Returns the file path if found, None otherwise.
     """
-    output_path = Path(output_dir)
+    if category:
+        output_path = Path(output_dir) / category
+    else:
+        output_path = Path(output_dir)
+    
     if not output_path.exists():
         return None
     
@@ -72,7 +77,7 @@ def check_existing_file(output_dir, upc):
     return None
 
 
-def download_and_rename(upc, image_url, output_dir, debug=False, thread_id=0, progress_bar=None):
+def download_and_rename(upc, image_url, output_dir, debug=False, thread_id=0, progress_bar=None, category=None):
     """
     Download the first image from a Dropbox folder and rename it with the UPC.
     
@@ -83,13 +88,22 @@ def download_and_rename(upc, image_url, output_dir, debug=False, thread_id=0, pr
         debug: Enable debug output
         thread_id: Thread identifier for unique Chrome profiles
         progress_bar: Optional tqdm progress bar instance
+        category: Optional category to organize files into subdirectories
         
     Returns:
         Tuple of (success: bool, message: str)
     """
     try:
+        # Determine the target directory (with category subfolder if provided)
+        if category:
+            target_dir = Path(output_dir) / category
+            target_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            target_dir = Path(output_dir)
+            target_dir.mkdir(parents=True, exist_ok=True)
+        
         # Check if file already exists
-        existing = check_existing_file(output_dir, upc)
+        existing = check_existing_file(output_dir, upc, category)
         if existing:
             return (True, f"Skipped (already exists: {existing.name})")
         
@@ -125,8 +139,8 @@ def download_and_rename(upc, image_url, output_dir, debug=False, thread_id=0, pr
             # Get the file extension
             extension = downloaded_file.suffix
             
-            # Rename and move to output directory
-            final_path = Path(output_dir) / f"{upc}{extension}"
+            # Rename and move to target directory (category subfolder if applicable)
+            final_path = target_dir / f"{upc}{extension}"
             shutil.move(str(downloaded_file), str(final_path))
             
             # Clean up temp directory
@@ -233,13 +247,20 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
         print("📝 Retrying failed downloads...")
     
     # Validate columns
-    if 'UPC' not in df.columns or 'IMAGES LINK' not in df.columns:
+    required_cols = ['UPC', 'IMAGES LINK']
+    if not all(col in df.columns for col in required_cols):
         print("✗ Error: Excel file must contain 'UPC' and 'IMAGES LINK' columns")
         print(f"  Found columns: {', '.join(df.columns)}")
         sys.exit(1)
     
+    # Check if CATEGORY column exists
+    has_category = 'CATEGORY' in df.columns
+    if has_category:
+        print("✓ CATEGORY column found - files will be organized by category")
+    
     # Filter out rows with missing data
-    df = df.dropna(subset=['UPC', 'IMAGES LINK'])
+    filter_cols = ['UPC', 'IMAGES LINK']
+    df = df.dropna(subset=filter_cols)
     
     # Create output directory
     output_path = Path(output_dir)
@@ -261,10 +282,11 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
             for idx, row in df.iterrows():
                 upc = str(row['UPC']).strip()
                 url = str(row['IMAGES LINK']).strip()
+                category = str(row['CATEGORY']).strip() if has_category and pd.notna(row.get('CATEGORY')) else None
                 
                 pbar.set_description(f"Processing {upc}")
                 
-                success, message = download_and_rename(upc, url, output_dir, debug, thread_id=0, progress_bar=pbar)
+                success, message = download_and_rename(upc, url, output_dir, debug, thread_id=0, progress_bar=pbar, category=category)
                 
                 if success:
                     if "Skipped" in message:
@@ -288,6 +310,7 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
                 for idx, row in df.iterrows():
                     upc = str(row['UPC']).strip()
                     url = str(row['IMAGES LINK']).strip()
+                    category = str(row['CATEGORY']).strip() if has_category and pd.notna(row.get('CATEGORY')) else None
                     
                     thread_id = idx % threads
                     
@@ -295,7 +318,8 @@ def process_excel(excel_file, output_dir, threads=1, debug=False):
                         download_and_rename,
                         upc, url, output_dir, debug, 
                         thread_id=thread_id,
-                        progress_bar=None  # Don't pass progress bar in multi-threaded mode
+                        progress_bar=None,  # Don't pass progress bar in multi-threaded mode
+                        category=category
                     )
                     future_to_item[future] = (idx, upc, url)
                 
